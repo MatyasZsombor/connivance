@@ -3,10 +3,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-// Custom SHA-256 with rotated IVs (SHA-256 words h4,h5,h6,h7,h0,h1,h2,h3)
-static const uint32_t CUSTOM_H0[8] = {
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a
+// Standard SHA-256 initial values (confirmed by tracing vm SHA calls)
+static const uint32_t SHA256_H0[8] = {
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 };
 
 static const uint32_t K[64] = {
@@ -31,10 +31,10 @@ static const uint32_t K[64] = {
 #define ROTR(x,n) (((x)>>(n)) | ((x)<<(32-(n))))
 #define BE32(p) ((uint32_t)(((uint8_t*)(p))[0]<<24 | ((uint8_t*)(p))[1]<<16 | ((uint8_t*)(p))[2]<<8 | ((uint8_t*)(p))[3]))
 
-// Compute custom SHA-256 of data[0..len-1], output 32 bytes to out
+// Compute SHA-256 of data[0..len-1], output 32 bytes to out
 void sha256_custom(const uint8_t *data, size_t len, uint8_t *out) {
     uint32_t h[8];
-    memcpy(h, CUSTOM_H0, sizeof(h));
+    memcpy(h, SHA256_H0, sizeof(h));
     
     // Build padded message
     size_t padded_len = len + 1;
@@ -81,126 +81,211 @@ void sha256_custom(const uint8_t *data, size_t len, uint8_t *out) {
     }
 }
 
-// Expected 240-byte output (reg[0])
-static const uint8_t EXPECTED[240] = {
-    0x31, 0x31, 0x8e, 0xb9, 0x29, 0x49, 0xce, 0xfb, 0xda, 0xca, 0x83, 0xb6, 0xb2, 0x63, 0xf6, 0x06,
-    0xd1, 0xe3, 0x51, 0x2c, 0x06, 0x2d, 0x07, 0x93, 0x02, 0x6b, 0x99, 0xd2, 0x80, 0x79, 0x8b, 0xf2,
-    0x3a, 0x8a, 0x28, 0xd2, 0x0f, 0xa8, 0xea, 0xb1, 0x03, 0x59, 0xc8, 0xd0, 0xf6, 0x17, 0x30, 0x40,
-    0x69, 0x93, 0xf6, 0xdf, 0xbd, 0x0f, 0xce, 0xe4, 0x05, 0xdb, 0x62, 0xa6, 0x2f, 0x0e, 0x70, 0xa3,
-    0x96, 0xa7, 0xc2, 0x62, 0xe1, 0xdc, 0xb4, 0x20, 0x48, 0x97, 0xfb, 0x82, 0x19, 0xca, 0xc5, 0x33,
-    0x42, 0x45, 0x9f, 0x4c, 0xe4, 0xf3, 0xe4, 0x50, 0xea, 0xc6, 0x2b, 0x53, 0xfb, 0x6c, 0xc7, 0x67,
-    0x98, 0x6c, 0xcd, 0x74, 0x12, 0xf4, 0x56, 0x7a, 0x8f, 0x05, 0x60, 0x4d, 0x7d, 0x36, 0xbc, 0xef,
-    0xab, 0xc9, 0x62, 0xff, 0x72, 0x05, 0x41, 0x4f, 0x65, 0xa6, 0xde, 0xcc, 0x24, 0x93, 0x90, 0x2c,
-    0xd0, 0x0b, 0xa7, 0x3d, 0x7d, 0x19, 0x19, 0x5c, 0x17, 0xb9, 0x12, 0x42, 0x57, 0x4f, 0x50, 0x6c,
-    0x60, 0x84, 0x62, 0x8b, 0x9f, 0x10, 0x96, 0xcd, 0x87, 0xa5, 0xdc, 0xc2, 0xc8, 0x48, 0x5e, 0xa2,
-    0x8c, 0x85, 0x42, 0x5b, 0x89, 0xfa, 0xd1, 0xfc, 0x9a, 0x87, 0xc5, 0xd0, 0x7b, 0x0e, 0x89, 0x97,
-    0xfa, 0x9b, 0xc0, 0x95, 0xff, 0x12, 0xa0, 0x68, 0x0d, 0x0e, 0xce, 0x7e, 0xd4, 0xcd, 0xb1, 0x11,
-    0x68, 0x08, 0x72, 0x62, 0x13, 0xec, 0x3a, 0xf1, 0x44, 0xeb, 0x24, 0xed, 0xfa, 0xcf, 0x60, 0x8e,
-    0xda, 0x4b, 0x39, 0xb4, 0x38, 0x2a, 0x81, 0x2f, 0x97, 0x31, 0x9f, 0xcd, 0x91, 0xd3, 0x8c, 0x2c,
-    0x28, 0x0a, 0xa1, 0x21, 0x19, 0x2e, 0x1e, 0x7c, 0xc7, 0xce, 0xb2, 0x53, 0xb8, 0x3f, 0xd8, 0xf7
+// Expected 256-byte target (reg[0] in the VM comparison).
+// B must equal TARGET when B = sha(NOT(flag)>>7) || sha(NOT(flag)>>6) || ...
+//                                  || sha(NOT(flag)>>1) || sha(NOT(flag)>>0)
+static const uint8_t EXPECTED[256] = {
+    0x99,0x3c,0x36,0xa1,0x84,0x00,0xdf,0x7a,0xb6,0x1f,0xe4,0x71,0x34,0x37,0xcb,0x9a,
+    0xb3,0x29,0x47,0xd6,0xb4,0xb9,0xbc,0x31,0x9c,0xf5,0x80,0x90,0x43,0xbd,0x7a,0xdf,
+    0xf4,0xb6,0xe9,0x11,0x2c,0x04,0xed,0x73,0x8a,0x81,0x81,0x13,0x1c,0x3b,0x8c,0x58,
+    0xf2,0xcb,0xd5,0xfd,0x5d,0xf4,0x64,0x81,0xe4,0xb9,0xad,0x0c,0x68,0xfd,0x01,0x88,
+    0x54,0xbc,0x8a,0x04,0xe5,0x27,0x72,0x62,0x43,0x01,0x93,0xb8,0xbe,0x73,0x6c,0x77,
+    0x0a,0x3b,0x08,0x9e,0x48,0x63,0xac,0x81,0xb9,0xdf,0x6b,0x87,0x09,0x00,0xfb,0xe4,
+    0x4e,0x79,0x17,0x20,0x06,0x11,0xeb,0xd0,0x9a,0x45,0x9c,0xb0,0xd8,0x98,0xbf,0x91,
+    0x37,0x7c,0xaf,0x65,0xa7,0xbf,0x0a,0x68,0x4a,0x1a,0xd8,0x1e,0xd7,0x17,0x06,0xb1,
+    0xb7,0x6a,0xf9,0xc2,0x08,0x9c,0xdc,0xaf,0x26,0x43,0x2c,0xe7,0x34,0x90,0x5b,0xb4,
+    0x39,0x29,0x74,0xde,0x7d,0x89,0xf9,0xde,0xf8,0x3c,0xaa,0x5c,0x0a,0x7b,0x19,0x38,
+    0xbc,0x9a,0xc2,0xac,0x2c,0x4e,0x4b,0x2a,0x05,0x9e,0xc5,0x08,0x4a,0xed,0x74,0x52,
+    0xfd,0x90,0x74,0xc6,0x2f,0x54,0x64,0x0c,0x9e,0x1d,0x60,0x31,0x11,0x6e,0x46,0x6d,
+    0x31,0x0b,0x06,0xb4,0x64,0x40,0x23,0x12,0x93,0xae,0x39,0x85,0x66,0x12,0xc6,0x34,
+    0xd3,0xbe,0x3f,0x2f,0x65,0x13,0x58,0x2e,0x86,0xfe,0x4a,0x42,0x60,0x97,0x38,0x93,
+    0x56,0x1a,0x85,0x69,0x49,0x62,0x01,0x26,0x62,0x3b,0xc8,0x84,0x47,0x2a,0xa4,0xe8,
+    0x23,0x6b,0x77,0x0f,0xaf,0x1c,0x70,0xe3,0x62,0xbc,0x8b,0x8f,0xa8,0x55,0x9d,0x70
 };
 
-// Flag template: "dach2026{XXXXXXX}" = 17 bytes
-// We need to find 7 chars at positions 9..15
+// Flag is 29 bytes: "dach2026{" (9 bytes) + 19 inner chars + "}" (1 byte)
+#define FLAG_LEN 29
+#define INNER_LEN 19
+#define INNER_START 9
 
-// Compute the expected reg[1] for a given flag
-void compute_reg1(const uint8_t *flag, int flag_len, uint8_t *reg1_out) {
-    // reg1 starts as initial_seed = EXPECTED[224..239] (16 bytes)
-    // After 7 rounds: reg1 = sha7 || sha6 || ... || sha1 || initial_seed
-    // Round i: shift flag by i bits per byte, hash, prepend to reg1
-    // So final reg1[0..31] = sha(flag>>7), reg1[32..63] = sha(flag>>6), ...
-    //                         reg1[192..223] = sha(flag>>1), reg1[224..239] = initial_seed
-    
-    // Just compute all 7 hashes and assemble
-    uint8_t shifted[17];
-    memcpy(shifted, flag, flag_len);
-    
-    for (int round = 1; round <= 7; round++) {
-        // Shift each byte right by 1 (cumulative)
-        for (int i = 0; i < flag_len; i++) shifted[i] >>= 1;
-        
-        // Hash
-        uint8_t hash[32];
-        sha256_custom(shifted, flag_len, hash);
-        
-        // reg1 at round r is at position (7-round)*32
-        memcpy(reg1_out + (7 - round) * 32, hash, 32);
+// Algorithm (discovered by dynamic analysis):
+//   NOT each byte of the flag, then right-shift by k bits (k = 0..7)
+//   Compute SHA-256 of the 29-byte shifted result for each k
+//   Assemble: B = sha(NOT>>7) || sha(NOT>>6) || ... || sha(NOT>>0)  (256 bytes)
+//   B must equal EXPECTED
+
+// Compute B for the given flag and compare against EXPECTED
+int check_flag(const uint8_t *flag) {
+    uint8_t not_flag[FLAG_LEN];
+    for (int i = 0; i < FLAG_LEN; i++) not_flag[i] = (uint8_t)flag[i] ^ 0xff;
+
+    uint8_t b[256];
+    for (int k = 7; k >= 0; k--) {
+        uint8_t shifted[FLAG_LEN];
+        for (int i = 0; i < FLAG_LEN; i++) shifted[i] = not_flag[i] >> k;
+        sha256_custom(shifted, FLAG_LEN, b + (7 - k) * 32);
     }
-    // Append initial seed
-    memcpy(reg1_out + 224, EXPECTED + 224, 16);
+    return memcmp(b, EXPECTED, 256) == 0;
 }
 
-// Check if a flag candidate matches
-int check_flag(const uint8_t *flag, int flag_len) {
-    uint8_t reg1[240];
-    compute_reg1(flag, flag_len, reg1);
-    return memcmp(reg1, EXPECTED, 240) == 0;
+// Layered solver using the bit-shift structure of the algorithm.
+//
+// At shift k, NOT(c) >> k collapses c into one of a small number of groups.
+// We use each shift level as a filter, progressively narrowing candidates:
+//
+//   k=7: all printable ASCII give NOT>>7 = 1 (no information)
+//   k=6: digit chars (c in [0x00,0x3f]) -> NOT>>6=3; others -> NOT>>6=2
+//   k=5: further splits into 3 groups (letter, underscore-class, digit)
+//   k=4: further splits into sub-ranges of 16 chars each
+//   k=3: further splits into sub-ranges of 8 chars each
+//   k=2: sub-ranges of 4 chars
+//   k=1: sub-ranges of 2 chars (pairs)
+//   k=0: exact char (full resolution)
+//
+// At each level we enumerate the 2^19 binary choices for the 19 inner positions
+// (low half vs high half of each current group), compute SHA-256, and keep only
+// the single combination that matches the expected target block.
+
+// For each inner position, track the current group as (lo, hi) inclusive
+static int GROUP_LO[INNER_LEN];  // low end of current char range (inclusive)
+static int GROUP_HI[INNER_LEN];  // high end (inclusive)
+
+// Compute the representative >>k value for a group [lo, hi] at the given bit choice
+// bit=0: use low half [lo, lo+(sz/2)-1]
+// bit=1: use high half [lo+sz/2, hi]
+static uint8_t group_k_val(int lo, int hi, int shift, int bit) {
+    int sz = hi - lo + 1;
+    int half = sz / 2;
+    int rep = bit ? (lo + half) : lo;  // representative char of this half
+    return (uint8_t)(((uint8_t)rep ^ 0xff) >> shift);
 }
 
-// Character set for brute force
-static const char CHARSET[] = "abcdefghijklmnopqrstuvwxyz0123456789_";
-static const int CHARSET_LEN = 37;
+// Run one level of the layered search.
+// Enumerates all 2^INNER_LEN bit patterns for the 19 inner positions,
+// builds the SHA input using group representatives, and returns the single
+// matching mask (or -1 if not found).
+static int find_mask_for_level(int shift, const uint8_t *target_block) {
+    static const char *PREFIX = "dach2026{";
+    static const char SUFFIX   = '}';
 
-int main(int argc, char *argv[]) {
-    uint8_t flag[17];
-    memcpy(flag, "dach2026{", 9);
-    flag[16] = '}';
-    
-    // Quick verification: compute reg1 for known-bad flag and check first bytes
-    memset(flag + 9, 'A', 7);
-    uint8_t reg1[240];
-    compute_reg1(flag, 17, reg1);
-    printf("Test flag 'dach2026{AAAAAAA}':\n");
-    printf("reg1[0..31]: ");
-    for (int i = 0; i < 32; i++) printf("%02x", reg1[i]);
-    printf("\n");
-    printf("expected[0..31]: ");
-    for (int i = 0; i < 32; i++) printf("%02x", EXPECTED[i]);
-    printf("\n");
-    printf("Match: %s\n\n", check_flag(flag, 17) ? "YES!" : "no");
-    
-    // Brute force 7 characters
-    printf("Starting brute force with charset: %s\n", CHARSET);
-    printf("Charset size: %d, total candidates: ~%.0e\n\n", CHARSET_LEN, 
-           (double)CHARSET_LEN * CHARSET_LEN * CHARSET_LEN * CHARSET_LEN *
-           CHARSET_LEN * CHARSET_LEN * CHARSET_LEN);
-    
-    // 7-nested loop
-    long long count = 0;
-    for (int i0 = 0; i0 < CHARSET_LEN; i0++) {
-        flag[9] = CHARSET[i0];
-        for (int i1 = 0; i1 < CHARSET_LEN; i1++) {
-            flag[10] = CHARSET[i1];
-            for (int i2 = 0; i2 < CHARSET_LEN; i2++) {
-                flag[11] = CHARSET[i2];
-                for (int i3 = 0; i3 < CHARSET_LEN; i3++) {
-                    flag[12] = CHARSET[i3];
-                    for (int i4 = 0; i4 < CHARSET_LEN; i4++) {
-                        flag[13] = CHARSET[i4];
-                        for (int i5 = 0; i5 < CHARSET_LEN; i5++) {
-                            flag[14] = CHARSET[i5];
-                            for (int i6 = 0; i6 < CHARSET_LEN; i6++) {
-                                flag[15] = CHARSET[i6];
-                                count++;
-                                if (check_flag(flag, 17)) {
-                                    printf("FOUND FLAG: dach2026{%c%c%c%c%c%c%c}\n",
-                                           flag[9], flag[10], flag[11], flag[12],
-                                           flag[13], flag[14], flag[15]);
-                                    return 0;
-                                }
-                            }
-                        }
-                        if (count % 10000000 == 0) {
-                            printf("Progress: %lld million (%c%c%c%c%c...)\n",
-                                   count/1000000, flag[9], flag[10], flag[11], flag[12], flag[13]);
-                            fflush(stdout);
-                        }
-                    }
-                }
-            }
+    // Precompute the fixed prefix and suffix contributions at this shift
+    uint8_t pfx[9];
+    uint8_t sfx;
+    for (int i = 0; i < 9; i++) pfx[i] = (uint8_t)((uint8_t)PREFIX[i] ^ 0xff) >> shift;
+    sfx = (uint8_t)((uint8_t)SUFFIX ^ 0xff) >> shift;
+
+    for (int mask = 0; mask < (1 << INNER_LEN); mask++) {
+        uint8_t inner[INNER_LEN];
+        for (int i = 0; i < INNER_LEN; i++) {
+            inner[i] = group_k_val(GROUP_LO[i], GROUP_HI[i], shift, (mask >> i) & 1);
         }
+        uint8_t full[FLAG_LEN];
+        memcpy(full, pfx, 9);
+        memcpy(full + 9, inner, INNER_LEN);
+        full[FLAG_LEN - 1] = sfx;
+
+        uint8_t hash[32];
+        sha256_custom(full, FLAG_LEN, hash);
+        if (memcmp(hash, target_block, 32) == 0) return mask;
     }
-    
-    printf("Not found in charset. Tried %lld combinations.\n", count);
-    return 1;
+    return -1;
+}
+
+// Refine GROUP_LO/GROUP_HI for each inner position given the bit mask from a level.
+static void refine_groups(int mask) {
+    for (int i = 0; i < INNER_LEN; i++) {
+        int lo = GROUP_LO[i], hi = GROUP_HI[i];
+        int sz = hi - lo + 1;
+        int half = sz / 2;
+        if ((mask >> i) & 1) lo = lo + half;  // high half
+        else                  hi = lo + half - 1;  // low half
+        GROUP_LO[i] = lo;
+        GROUP_HI[i] = hi;
+    }
+}
+
+int main(void) {
+    printf("Connivance CTF flag solver\n");
+    printf("==========================\n\n");
+    printf("Algorithm: B = sha256(NOT(flag)>>7) || ... || sha256(NOT(flag)>>0)\n");
+    printf("Flag length: %d bytes  (19 inner chars)\n\n", FLAG_LEN);
+
+    // Initialize groups: flag chars are printable ASCII, so [0x00, 0x7f].
+    // This ensures each level's split produces a unique NOT>>k representative value.
+    for (int i = 0; i < INNER_LEN; i++) {
+        GROUP_LO[i] = 0x00;
+        GROUP_HI[i] = 0x7f;
+    }
+
+    // Level k=6: 2 groups per position (gives digit vs letter/other classification)
+    printf("Level k=6: finding digit/non-digit pattern...\n");
+    int mask6 = find_mask_for_level(6, EXPECTED + 32);
+    if (mask6 < 0) { printf("ERROR: no match at k=6\n"); return 1; }
+    printf("  mask=0x%05x\n", mask6);
+    refine_groups(mask6);
+
+    // Level k=5
+    printf("Level k=5: refining groups...\n");
+    int mask5 = find_mask_for_level(5, EXPECTED + 64);
+    if (mask5 < 0) { printf("ERROR: no match at k=5\n"); return 1; }
+    printf("  mask=0x%05x\n", mask5);
+    refine_groups(mask5);
+
+    // Level k=4
+    printf("Level k=4: refining groups...\n");
+    int mask4 = find_mask_for_level(4, EXPECTED + 96);
+    if (mask4 < 0) { printf("ERROR: no match at k=4\n"); return 1; }
+    printf("  mask=0x%05x\n", mask4);
+    refine_groups(mask4);
+
+    // Level k=3
+    printf("Level k=3: refining groups...\n");
+    int mask3 = find_mask_for_level(3, EXPECTED + 128);
+    if (mask3 < 0) { printf("ERROR: no match at k=3\n"); return 1; }
+    printf("  mask=0x%04x\n", mask3);
+    refine_groups(mask3);
+
+    // Level k=2
+    printf("Level k=2: refining groups...\n");
+    int mask2 = find_mask_for_level(2, EXPECTED + 160);
+    if (mask2 < 0) { printf("ERROR: no match at k=2\n"); return 1; }
+    printf("  mask=0x%05x\n", mask2);
+    refine_groups(mask2);
+
+    // Level k=1
+    printf("Level k=1: refining groups...\n");
+    int mask1 = find_mask_for_level(1, EXPECTED + 192);
+    if (mask1 < 0) { printf("ERROR: no match at k=1\n"); return 1; }
+    printf("  mask=0x%05x\n", mask1);
+    refine_groups(mask1);
+
+    // Level k=0: each group now has exactly 2 chars; pick the right one
+    printf("Level k=0: finding exact characters...\n");
+    int mask0 = find_mask_for_level(0, EXPECTED + 224);
+    if (mask0 < 0) { printf("ERROR: no match at k=0\n"); return 1; }
+    printf("  mask=0x%05x\n", mask0);
+    refine_groups(mask0);
+
+    // Recover flag: after 8 levels each group is a single char
+    uint8_t flag[FLAG_LEN + 1];
+    memcpy(flag, "dach2026{", 9);
+    for (int i = 0; i < INNER_LEN; i++) {
+        if (GROUP_LO[i] != GROUP_HI[i]) {
+            printf("WARNING: position %d is ambiguous [0x%02x, 0x%02x]\n",
+                   i, GROUP_LO[i], GROUP_HI[i]);
+        }
+        flag[INNER_START + i] = (uint8_t)GROUP_LO[i];
+    }
+    flag[FLAG_LEN - 1] = '}';
+    flag[FLAG_LEN] = '\0';
+
+    // Final verification
+    if (check_flag(flag)) {
+        printf("\nFLAG: %s\n", flag);
+    } else {
+        printf("\nERROR: final flag check failed: %s\n", flag);
+        return 1;
+    }
+
+    return 0;
 }
